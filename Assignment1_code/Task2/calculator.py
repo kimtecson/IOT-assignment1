@@ -154,22 +154,13 @@ class Calculator:
         try:
             while True:
                 with self._lock:
-                    needs_display = self._needs_display
-                    if needs_display:
-                        text   = self._display_text
-                        colour = self._text_colour
-                        self._needs_display = False
-
-                if needs_display:
-                    # show_message blocks until scroll is done – safe on main thread
-                    self._sense.show_message(
+                    text   = self._display_text
+                    colour = self._text_colour
+                self._sense.show_message(
                         text,
                         scroll_speed = SCROLL_SPEED,
                         text_colour  = colour,
                     )
-                else:
-                    time.sleep(0.05)
-
         except KeyboardInterrupt:
             print("\n[Exit] Keyboard interrupt – shutting down.")
         finally:
