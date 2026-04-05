@@ -224,6 +224,17 @@ class Classifier:
     #     if tilted:
     #         return lbl["tilted"],  AMBER
     #     return lbl["aligned"], GREEN
+
+    @staticmethod
+    def _normalise(angle: float) -> float:
+        """Fix 1: normalise any angle to -180..+180 range."""
+        if angle > 180:
+            angle -= 360
+        elif angle < -180:
+            angle += 360
+        return angle
+
+
     def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
         ori         = self._cfg["orientation"]
         lbl         = ori["labels"]
