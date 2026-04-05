@@ -200,29 +200,48 @@ class Classifier:
         else:
             return lbl["ok"],   GREEN
 
+    # def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
+    #     """
+    #     Returns (label, colour) for orientation.
+    #     Pitch/roll are normalised to ±180 before comparing.
+    #     """
+    #     ori         = self._cfg["orientation"]
+    #     lbl         = ori["labels"]
+    #     pitch_limit = ori["pitch_limit"]
+    #     roll_limit  = ori["roll_limit"]
+    #     yaw_min     = ori["yaw_min"]
+    #     yaw_max     = ori["yaw_max"]
+
+    #     norm_pitch = pitch - 360 if pitch > 180 else pitch
+    #     norm_roll  = roll  - 360 if roll  > 180 else roll
+
+    #     tilted = (
+    #         abs(norm_pitch) > pitch_limit
+    #         or abs(norm_roll) > roll_limit
+    #         or not (yaw_min <= yaw <= yaw_max)
+    #     )
+
+    #     if tilted:
+    #         return lbl["tilted"],  AMBER
+    #     return lbl["aligned"], GREEN
     def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
-        """
-        Returns (label, colour) for orientation.
-        Pitch/roll are normalised to ±180 before comparing.
-        """
         ori         = self._cfg["orientation"]
         lbl         = ori["labels"]
         pitch_limit = ori["pitch_limit"]
         roll_limit  = ori["roll_limit"]
-        yaw_min     = ori["yaw_min"]
-        yaw_max     = ori["yaw_max"]
 
-        norm_pitch = pitch - 360 if pitch > 180 else pitch
-        norm_roll  = roll  - 360 if roll  > 180 else roll
+        # Normalise pitch and roll to -180..+180
+        norm_pitch = self._normalise(pitch)
+        norm_roll  = self._normalise(roll)
 
+        # Only check pitch and roll — yaw is optional per assignment spec
         tilted = (
             abs(norm_pitch) > pitch_limit
             or abs(norm_roll) > roll_limit
-            or not (yaw_min <= yaw <= yaw_max)
         )
 
         if tilted:
-            return lbl["tilted"],  AMBER
+            return lbl["tilted"], AMBER
         return lbl["aligned"], GREEN
 
 
