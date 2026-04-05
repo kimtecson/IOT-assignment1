@@ -152,7 +152,7 @@ class Calculator:
         print("Press Ctrl+C to exit.\n")
 
         try:
-            while self._running:
+            while True:
                 with self._lock:
                     needs_display = self._needs_display
                     if needs_display:
