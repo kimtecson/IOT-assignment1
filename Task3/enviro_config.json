@@ -1,0 +1,42 @@
+{
+    "temperature": {
+        "min": 15.0,
+        "max": 24.0,
+        "unit": "Celsius",
+        "labels": {
+            "low":  "Low",
+            "ok":   "Comfortable",
+            "high": "High"
+        }
+    },
+    "humidity": {
+        "min": 30.0,
+        "max": 65.0,
+        "unit": "Percent",
+        "labels": {
+            "low":  "Low",
+            "ok":   "Comfortable",
+            "high": "High"
+        }
+    },
+    "pressure": {
+        "min": 980.0,
+        "max": 1030.0,
+        "unit": "hPa",
+        "labels": {
+            "low":  "Low",
+            "ok":   "Normal",
+            "high": "High"
+        }
+    },
+    "orientation": {
+        "pitch_limit": 30.0,
+        "roll_limit":  30.0,
+        "yaw_min":     0.0,
+        "yaw_max":     360.0,
+        "labels": {
+            "aligned": "Aligned",
+            "tilted":  "Tilted"
+        }
+    }
+}
