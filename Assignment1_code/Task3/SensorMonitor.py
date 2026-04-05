@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+SensorMonitor.py
+RMIT COSC2674/2755 – Programming Internet of Things
+Individual Assignment 1 – Task 3
+Student Name : [Your Name]
+Student ID   : [Your Student ID]
+
 Continuously monitors Sense HAT environmental sensors and orientation.
 Classifies readings against user-defined thresholds in enviro_config.json.
 Logs all readings to a local SQLite database (envirotrack.db).
@@ -12,6 +18,17 @@ LED display cycle (every 5 seconds)
   Screen 2 : H:<humid>  – green=Comfortable, blue=Low, red=High
   Screen 3 : P:<press>  – green=Normal,      blue=Low, red=High
   Screen 4 : orientation – green=Aligned, amber=Tilted
+
+Fixes applied:
+  1. Improved pitch/roll normalisation (handles both >180 and <-180)
+  2. Yaw wrap-around logic for circular ranges
+  3. Yaw smoothing via moving average (deque of last 5 readings)
+  4. Separate DB connect method for reliability
+  5. Display renders once per interval, not every tick
+  6. Sensor error handling – skips failed reads gracefully
+  7. Pause/resume LED feedback (PAUSED / RESUME message)
+  8. Resource cleanup on exit (joystick handler removed)
+  9. Config label validation for all sections
 """
 
 import json
@@ -21,6 +38,7 @@ import sqlite3
 import sys
 import time
 import threading
+from collections import deque
 from datetime import datetime
 
 try:
@@ -63,11 +81,9 @@ class ConfigLoader:
         self.config = self._load()
 
     def _load(self) -> dict:
-        # File existence check
         if not os.path.exists(self._path):
             self._abort(f"Config file not found: {self._path}")
 
-        # JSON parse check
         try:
             with open(self._path, "r") as f:
                 data = json.load(f)
@@ -91,12 +107,19 @@ class ConfigLoader:
             if mn >= mx:
                 self._abort(f"'{section}' min ({mn}) must be less than max ({mx}).")
 
+        # Fix 10: validate label keys for each section
+        for section in ["temperature", "humidity", "pressure"]:
+            for label in ["low", "ok", "high"]:
+                if label not in data[section]["labels"]:
+                    self._abort(f"Missing label '{label}' in config section '{section}'.")
+        for label in ["aligned", "tilted"]:
+            if label not in data["orientation"]["labels"]:
+                self._abort(f"Missing label '{label}' in config section 'orientation'.")
+
         ori = data["orientation"]
         for key in ["pitch_limit", "roll_limit"]:
             if not (0 < ori[key] <= 90):
                 self._abort(f"orientation.{key} must be between 0 and 90 degrees.")
-        if not (0 <= ori["yaw_min"] < ori["yaw_max"] <= 360):
-            self._abort("orientation yaw_min/yaw_max must be within 0-360 and min < max.")
 
         print("[Config] Loaded and validated successfully.")
         return data
@@ -142,10 +165,15 @@ class DatabaseManager:
 
     def __init__(self, db_path: str):
         self._path = db_path
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn = None
         self._lock = threading.Lock()
+        self._connect()  # Fix 4: separate connect method
+
+    def _connect(self):
+        """Create database connection and ensure table exists."""
+        self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._create_table()
-        print(f"[DB] Connected to {db_path}")
+        print(f"[DB] Connected to {self._path}")
 
     def _create_table(self):
         with self._lock:
@@ -174,7 +202,8 @@ class DatabaseManager:
             self._conn.commit()
 
     def close(self):
-        self._conn.close()
+        if self._conn:
+            self._conn.close()
 
 
 # ═══════════════════════════ Classifier ═══════════════════════════════
@@ -186,44 +215,15 @@ class Classifier:
         self._cfg = config
 
     def classify_env(self, value: float, section: str) -> tuple:
-        """
-        Returns (label, colour) for temperature / humidity / pressure.
-        """
         mn  = self._cfg[section]["min"]
         mx  = self._cfg[section]["max"]
         lbl = self._cfg[section]["labels"]
-
         if value < mn:
             return lbl["low"],  BLUE
         elif value > mx:
             return lbl["high"], RED
         else:
             return lbl["ok"],   GREEN
-
-    # def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
-    #     """
-    #     Returns (label, colour) for orientation.
-    #     Pitch/roll are normalised to ±180 before comparing.
-    #     """
-    #     ori         = self._cfg["orientation"]
-    #     lbl         = ori["labels"]
-    #     pitch_limit = ori["pitch_limit"]
-    #     roll_limit  = ori["roll_limit"]
-    #     yaw_min     = ori["yaw_min"]
-    #     yaw_max     = ori["yaw_max"]
-
-    #     norm_pitch = pitch - 360 if pitch > 180 else pitch
-    #     norm_roll  = roll  - 360 if roll  > 180 else roll
-
-    #     tilted = (
-    #         abs(norm_pitch) > pitch_limit
-    #         or abs(norm_roll) > roll_limit
-    #         or not (yaw_min <= yaw <= yaw_max)
-    #     )
-
-    #     if tilted:
-    #         return lbl["tilted"],  AMBER
-    #     return lbl["aligned"], GREEN
 
     @staticmethod
     def _normalise(angle: float) -> float:
@@ -234,21 +234,31 @@ class Classifier:
             angle += 360
         return angle
 
-
     def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
         ori         = self._cfg["orientation"]
         lbl         = ori["labels"]
         pitch_limit = ori["pitch_limit"]
         roll_limit  = ori["roll_limit"]
+        yaw_min     = ori["yaw_min"]
+        yaw_max     = ori["yaw_max"]
 
-        # Normalise pitch and roll to -180..+180
+        # Fix 1: improved normalisation
         norm_pitch = self._normalise(pitch)
         norm_roll  = self._normalise(roll)
 
-        # Only check pitch and roll — yaw is optional per assignment spec
+        # Fix 2: yaw wrap-around logic
+        if yaw_min <= yaw_max:
+            yaw_ok = yaw_min <= yaw <= yaw_max
+        else:
+            # handles wrap-around e.g. 350° to 10°
+            yaw_ok = yaw >= yaw_min or yaw <= yaw_max
+
+        # Small buffer accounts for accelerometer noise near the threshold
+        TILT_BUFFER = 5.0
         tilted = (
-            abs(norm_pitch) > pitch_limit
-            or abs(norm_roll) > roll_limit
+            abs(norm_pitch) > pitch_limit + TILT_BUFFER
+            or abs(norm_roll)  > roll_limit  + TILT_BUFFER
+            or not yaw_ok
         )
 
         if tilted:
@@ -261,43 +271,53 @@ class Classifier:
 class DisplayManager:
     """
     Cycles through 4 LED screens every DISPLAY_INTERVAL seconds.
-    All sense.show_message calls happen here on a dedicated thread.
+    Fix 5: renders only once per interval, not on every tick.
     """
 
     SCREENS = ["temperature", "humidity", "pressure", "orientation"]
 
     def __init__(self, sense: SenseHat):
-        self._sense       = sense
-        self._screen_idx  = 0
-        self._last_switch = time.time()
-        self._reading     = None          # latest reading dict
-        self._paused      = False
-        self._lock        = threading.Lock()
+        self._sense        = sense
+        self._screen_idx   = 0
+        self._last_switch  = time.time()
+        self._reading      = None
+        self._paused       = False
+        self._needs_render = True   # render immediately on first reading
+        self._lock         = threading.Lock()
 
     def update_reading(self, reading: dict):
         with self._lock:
-            self._reading = reading
+            self._reading      = reading
+            self._needs_render = True
 
     def set_paused(self, paused: bool):
         with self._lock:
             self._paused = paused
 
     def tick(self):
-        """Call from main loop – advances screen and renders if due."""
+        """Advances screen every DISPLAY_INTERVAL; renders once per switch."""
         with self._lock:
-            paused  = self._paused
-            reading = self._reading
+            paused       = self._paused
+            reading      = self._reading
+            needs_render = self._needs_render
 
         if paused or reading is None:
             return
 
         now = time.time()
+        # Fix 5: only switch + render once per interval
         if now - self._last_switch >= DISPLAY_INTERVAL:
             self._screen_idx  = (self._screen_idx + 1) % len(self.SCREENS)
             self._last_switch = now
+            with self._lock:
+                self._needs_render = True
+            needs_render = True
 
-        screen = self.SCREENS[self._screen_idx]
-        self._render(screen, reading)
+        if needs_render:
+            screen = self.SCREENS[self._screen_idx]
+            self._render(screen, reading)
+            with self._lock:
+                self._needs_render = False
 
     def _render(self, screen: str, reading: dict):
         if screen == "temperature":
@@ -309,7 +329,7 @@ class DisplayManager:
         elif screen == "pressure":
             text   = f"P:{reading['pressure']:.0f}"
             colour = reading["pressure_colour"]
-        else:  # orientation
+        else:
             p = reading["pitch"]
             r = reading["roll"]
             y = reading["yaw"]
@@ -332,24 +352,26 @@ class SensorMonitor:
     """
 
     def __init__(self):
-        # Load and validate config
         loader      = ConfigLoader(CONFIG_FILE)
         self._cfg   = loader.config
 
-        # Initialise subsystems
-        self._sense   = SenseHat()
+        self._sense = SenseHat()
         self._sense.set_rotation(0)
-        self._sense.set_imu_config(True, True, False) #gyro + accel for accurate yaw
+        # Use all 3 sensors for best orientation accuracy
+        self._sense.set_imu_config(True, True, True)
+
         self._db      = DatabaseManager(DB_FILE)
         self._clf     = Classifier(self._cfg)
         self._display = DisplayManager(self._sense)
 
-        self._paused      : bool  = False
-        self._running     : bool  = True
-        self._last_poll   : float = 0.0   # force immediate first poll
-        self._lock        = threading.Lock()
+        # Fix 3: yaw smoothing via moving average
+        self._yaw_history = deque(maxlen=5)
 
-        # Joystick: middle to pause/resume
+        self._paused    : bool  = False
+        self._running   : bool  = True
+        self._last_poll : float = 0.0
+        self._lock      = threading.Lock()
+
         self._sense.stick.direction_middle = self._handle_middle
 
     # ── Joystick ─────────────────────────────────────────────────────
@@ -361,21 +383,45 @@ class SensorMonitor:
             self._paused = not self._paused
         paused = self._paused
         self._display.set_paused(paused)
-        state = "PAUSED" if paused else "RESUMED"
-        print(f"[Joystick] {state}")
+        # Fix 7: visual feedback on pause/resume
+        if paused:
+            self._sense.show_message("PAUSED", text_colour=AMBER, scroll_speed=0.05)
+        else:
+            self._sense.show_message("RESUME", text_colour=GREEN, scroll_speed=0.05)
+        print(f"[Joystick] {'PAUSED' if paused else 'RESUMED'}")
 
-    # ── Sensor read & classify ────────────────────────────────────────
+    # ── Yaw smoothing ─────────────────────────────────────────────────
 
-    def _poll(self) -> dict:
-        """Read all sensors, calibrate, classify, return a reading dict."""
-        temp_raw  = self._sense.get_temperature()
-        temp_cal  = round(temp_raw - TEMP_OFFSET, 2)
-        humidity  = round(self._sense.get_humidity(), 2)
-        pressure  = round(self._sense.get_pressure(), 2)
-        ori       = self._sense.get_orientation()
-        pitch     = round(ori["pitch"], 2)
-        roll      = round(ori["roll"],  2)
-        yaw       = round(self._sense.get_orientation()["yaw"],   2)
+    def _smooth_yaw(self, yaw: float) -> float:
+        """Fix 3: moving average over last 5 yaw readings."""
+        self._yaw_history.append(yaw)
+        return round(sum(self._yaw_history) / len(self._yaw_history), 2)
+
+    # ── Sensor poll ───────────────────────────────────────────────────
+
+    def _poll(self):
+        """Fix 6: wrapped in try/except – returns None on sensor failure."""
+        try:
+            temp_raw = self._sense.get_temperature()
+            temp_cal = round(temp_raw - TEMP_OFFSET, 2)
+            humidity = round(self._sense.get_humidity(), 2)
+            pressure = round(self._sense.get_pressure(), 2)
+
+            # Raw accelerometer → convert g-force to pitch/roll degrees (no drift)
+            accel_raw = self._sense.get_accelerometer_raw()
+            x = accel_raw['x']
+            y = accel_raw['y']
+            z = accel_raw['z']
+            pitch = round(math.degrees(math.atan2(x, math.sqrt(y*y + z*z))), 2)
+            roll  = round(math.degrees(math.atan2(y, math.sqrt(x*x + z*z))), 2)
+
+            # Fix 3: smoothed yaw
+            raw_yaw = self._sense.get_orientation()["yaw"]
+            yaw     = self._smooth_yaw(raw_yaw)
+
+        except Exception as e:
+            print(f"[Error] Sensor read failed: {e}")
+            return None  # Fix 6: skip this reading
 
         temp_status,  temp_colour  = self._clf.classify_env(temp_cal,  "temperature")
         humid_status, humid_colour = self._clf.classify_env(humidity,  "humidity")
@@ -426,20 +472,21 @@ class SensorMonitor:
                 with self._lock:
                     paused = self._paused
 
-                # ── Sensor poll (every POLL_INTERVAL seconds) ──────────
                 if not paused and (now - self._last_poll) >= POLL_INTERVAL:
                     self._last_poll = now
                     reading = self._poll()
-                    self._db.log(reading)
-                    self._display.update_reading(reading)
+                    if reading:  # Fix 6: only log successful reads
+                        self._db.log(reading)
+                        self._display.update_reading(reading)
 
-                # ── Display tick ───────────────────────────────────────
                 self._display.tick()
+                time.sleep(0.1)  # Fix 9: prevent CPU hogging
 
         except KeyboardInterrupt:
             print("\n[Exit] Shutting down.")
         finally:
             self._sense.clear()
+            self._sense.stick.direction_middle = None  # Fix 8: cleanup handler
             self._db.close()
             print("[Exit] Display cleared. Database closed. Goodbye!")
 
