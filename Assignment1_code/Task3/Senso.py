@@ -218,47 +218,67 @@ class Classifier:
         else:
             return lbl["ok"],   GREEN
 
+    # def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
+    #     """
+    #     Returns (label, colour) for orientation.
+    #     Normalises pitch/roll to -180..180 range and handles circular yaw.
+    #     """
+    #     ori         = self._cfg["orientation"]
+    #     lbl         = ori["labels"]
+    #     pitch_limit = ori["pitch_limit"]
+    #     roll_limit  = ori["roll_limit"]
+    #     yaw_min     = ori["yaw_min"]
+    #     yaw_max     = ori["yaw_max"]
+
+    #     # Normalise pitch and roll to -180..180 range
+    #     norm_pitch = pitch
+    #     norm_roll = roll
+
+    #     if norm_pitch > 180:
+    #         norm_pitch -= 360
+    #     elif norm_pitch < -180:
+    #         norm_pitch += 360
+
+    #     if norm_roll > 180:
+    #         norm_roll -= 360
+    #     elif norm_roll < -180:
+    #         norm_roll += 360
+
+    #     # Check if within limits
+    #     pitch_ok = abs(norm_pitch) <= pitch_limit
+    #     roll_ok = abs(norm_roll) <= roll_limit
+
+    #     # Handle yaw (circular)
+    #     if yaw_min <= yaw_max:
+    #         yaw_ok = yaw_min <= yaw <= yaw_max
+    #     else:
+    #         # Handle wrap-around case (e.g., 350° to 10°)
+    #         yaw_ok = yaw >= yaw_min or yaw <= yaw_max
+
+    #     tilted = not (pitch_ok and roll_ok and yaw_ok)
+
+    #     if tilted:
+    #         return lbl["tilted"],  AMBER
+    #     return lbl["aligned"], GREEN
+
     def classify_orientation(self, pitch: float, roll: float, yaw: float) -> tuple:
-        """
-        Returns (label, colour) for orientation.
-        Normalises pitch/roll to -180..180 range and handles circular yaw.
-        """
         ori         = self._cfg["orientation"]
         lbl         = ori["labels"]
         pitch_limit = ori["pitch_limit"]
         roll_limit  = ori["roll_limit"]
-        yaw_min     = ori["yaw_min"]
-        yaw_max     = ori["yaw_max"]
 
-        # Normalise pitch and roll to -180..180 range
-        norm_pitch = pitch
-        norm_roll = roll
+        # Normalise pitch and roll to -180..+180
+        norm_pitch = self._normalise(pitch)
+        norm_roll  = self._normalise(roll)
 
-        if norm_pitch > 180:
-            norm_pitch -= 360
-        elif norm_pitch < -180:
-            norm_pitch += 360
-
-        if norm_roll > 180:
-            norm_roll -= 360
-        elif norm_roll < -180:
-            norm_roll += 360
-
-        # Check if within limits
-        pitch_ok = abs(norm_pitch) <= pitch_limit
-        roll_ok = abs(norm_roll) <= roll_limit
-
-        # Handle yaw (circular)
-        if yaw_min <= yaw_max:
-            yaw_ok = yaw_min <= yaw <= yaw_max
-        else:
-            # Handle wrap-around case (e.g., 350° to 10°)
-            yaw_ok = yaw >= yaw_min or yaw <= yaw_max
-
-        tilted = not (pitch_ok and roll_ok and yaw_ok)
+        # Only check pitch and roll — yaw is optional per assignment spec
+        tilted = (
+            abs(norm_pitch) > pitch_limit
+            or abs(norm_roll) > roll_limit
+        )
 
         if tilted:
-            return lbl["tilted"],  AMBER
+            return lbl["tilted"], AMBER
         return lbl["aligned"], GREEN
 
 
